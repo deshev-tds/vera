@@ -291,6 +291,13 @@ This is a research prototype: review deny patterns and add policy/allowlists bef
     ```
 - The verifier runs in a **clean-room** “Auditor” persona and does not reuse the worker’s chat history (only task + notes + evidence).
 - Stagnation detector: if `UNRESOLVED` repeats without new evidence for `STAGNATION_LIMIT` turns, the agent is forced to run a tool; repeated failure types prompt escalation (`FAILURE_ESCALATION_LIMIT`).
+- Negative-claim protocol (e.g., “has X launched yet?”):
+  - Minimum source coverage is enforced before any “no official announcement found” conclusion:
+    - ≥2 **official** domains (vendor-owned)
+    - ≥1 **independent** domain (non‑vendor)
+  - Domain‑shift guard prevents hammering the same domain when minimums aren’t met (`policy_domain_shift`).
+  - Once the negative‑claim budget is exhausted and source minimums are satisfied, the run transitions to `UNRESOLVED(reason)` with a concrete “no official announcement found in sources checked” summary (`policy_conclusion_ready`).
+  - Negative‑claim constraints are injected as `OPEN CONSTRAINTS` so the model treats them as hard requirements (no explicit denial required).
 - To prevent “final deliverables” tool-call loops, the runner stops after repeated finalization-style file writes (see `policy_finalization_stop` in `trace.jsonl`).
 - Defaults were relaxed for exploration: `--max-steps` now defaults to `80` and tool timeouts are longer (`MAX_TOOL_SECONDS=900`). You can set unlimited steps with `--max-steps 0` or `MAX_STEPS=0`.
 - Model request timeout defaults to `150s` and can be overridden with `MODEL_TIMEOUT` env var.
