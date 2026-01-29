@@ -69,6 +69,47 @@ Verifier (decompose/check/judge)  trace.jsonl + notes.md
         Dashboard (/events, /metrics)
 ```
 
+## Runtime Flow (Current Control Logic)
+
+```text
+User task
+  |
+  v
+Context builder
+(System + PRIMARY TASK + pinned notes + action tail)
+  |
+  v
+Model output
+THOUGHT + ACTION + EVIDENCE_USED + STATUS_UPDATE
+  |
+  v
+Policy gates (structural)
+- Notes append-only
+- Query mutation / vector shift
+- Domain shift (negative-claim)
+- Brave rate limit / circuit breaker
+- Source budget / stagnation controls
+  |
+  v
+Tool execution
+- shell (curl/wget/python)
+- brave_search / brave_news (if key set)
+  |
+  v
+Evidence ledger + notes append
+evidence.jsonl + notes.md + trace.jsonl
+  |
+  v
+Verifier (clean-room auditor)
+- scores + constraints
+- updates epistemic state
+  |
+  v
+Termination
+- VERIFIED
+- or UNRESOLVED(reason) with constraints + evidence summary
+```
+
 ## Design Decisions (and Why)
 
 ### 1) “Linux box” interface with file mounts
@@ -259,6 +300,7 @@ This is a research prototype: review deny patterns and add policy/allowlists bef
 ## Important behavior notes
 
 - Tool execution still requires a parseable JSON tool call, but the parser now accepts either `{"tool":"shell","args":{"cmd":"..."}}` or `{"tool":"shell","command":"..."}`, and can recover JSON from fenced blocks.
+- Optional Brave Search tool: the agent can call `brave_search` / `brave_news` directly (no shell) when `BRAVE_API_KEY` is set. Example: `{"tool":"brave_search","args":{"q":"windows 12","count":5,"freshness":"month","country":"us","search_lang":"en"}}`.
 - If a model talks about using tools but does not call them, you will see model/verifier events but few `tool` events in `trace.jsonl`.
 - A lightweight policy layer nudges the agent before the first tool call and when the model hits `finish_reason="length"` repeatedly; these show up as `policy_*` metrics and events.
 - Context is now **deterministic**: each step reassembles the prompt from System + PRIMARY TASK + pinned `notes.md` + a short action tail (no FIFO clipping of the middle).
@@ -308,6 +350,7 @@ This is a research prototype: review deny patterns and add policy/allowlists bef
 - Defaults were relaxed for exploration: `--max-steps` now defaults to `80` and tool timeouts are longer (`MAX_TOOL_SECONDS=900`). You can set unlimited steps with `--max-steps 0` or `MAX_STEPS=0`.
 - Model request timeout defaults to `150s` and can be overridden with `MODEL_TIMEOUT` env var.
 - Tooling caches are routed into `/work/.cache` (pip/npm/playwright) to make runtime installs more reliable across steps.
+- Brave API token: set `BRAVE_API_KEY` (or pass `--brave-api-key` to `run.py`). Optional `BRAVE_API_VERSION` sets the API version header. Use `brave_news` for news-only queries.
 - Brave Search API throttling (optional): `BRAVE_MIN_INTERVAL`, `BRAVE_BACKOFF_MAX`, `BRAVE_COOLDOWN_S`, `BRAVE_MAX_CONSEC_429`, and `BRAVE_MAX_CALLS` enforce rate limits, exponential backoff, and a circuit breaker.
 
 ## Roadmap (Likely Next)

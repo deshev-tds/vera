@@ -151,6 +151,13 @@ def parse_with_thought(text: str) -> AgentOutput:
             cmd = json_obj.get("cmd") or json_obj.get("command")
             if isinstance(cmd, str) and cmd.strip():
                 tool_args = {"cmd": cmd}
+        if tool_name in {"brave_search", "brave_news"}:
+            if tool_args is None:
+                tool_args = {}
+            if isinstance(json_obj.get("query"), str) and "query" not in tool_args and "q" not in tool_args:
+                tool_args["query"] = json_obj.get("query")
+            if isinstance(json_obj.get("q"), str) and "q" not in tool_args and "query" not in tool_args:
+                tool_args["q"] = json_obj.get("q")
 
     return AgentOutput(thought=thought, tool_name=tool_name, tool_args=tool_args, error=None)
 

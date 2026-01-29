@@ -624,6 +624,12 @@ def run_agent(
             if isinstance(obs, dict):
                 output = str(obs.get("output") or "")
             urls = _extract_urls(cmd + "\n" + output)
+            if tool in {"brave_search", "brave_news"} and isinstance(obs, dict):
+                items = obs.get("items")
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, dict) and item.get("url"):
+                            urls.append(str(item.get("url")))
             failure_type = ""
             error_type = str((obs or {}).get("error_type") or "")
             error_msg = str((obs or {}).get("error") or "")
@@ -1234,12 +1240,17 @@ def run_agent(
                 primary_url = urls[0] if urls else None
                 domain = _extract_domain(primary_url) if primary_url else None
                 query = _extract_query_from_url(primary_url) if primary_url else None
+                if tool in {"brave_search", "brave_news"} and isinstance(args, dict):
+                    query = args.get("q") or args.get("query")
+                    domain = "api.search.brave.com"
                 query_family = _normalize_query(query) if query else None
                 query_vector = _classify_query_vector(cmd, query, domain)
                 source_class = _classify_source(primary_url, domain)
+                if tool in {"brave_search", "brave_news"}:
+                    source_class = "search"
                 move_type = _classify_move(domain, query_family, source_class)
                 move_sig = f"{move_type}:{domain or '-'}:{query_family or '-'}"
-                uses_brave = tool == "shell" and _uses_brave_api(cmd)
+                uses_brave = tool in {"brave_search", "brave_news"} or (tool == "shell" and _uses_brave_api(cmd))
 
                 if tool == "shell" and notes_mode == "overwrite":
                     obs = {
@@ -1278,7 +1289,7 @@ def run_agent(
                     last_evidence_count = len(evidence_ids)
                     continue
 
-                if notes_required and tool == "shell" and notes_mode != "append":
+                if notes_required and (tool != "shell" or notes_mode != "append"):
                     obs = {
                         "error": "Action Blocked: You must update notes.md first (append-only).",
                         "error_type": "notes_update_required",
@@ -1315,7 +1326,7 @@ def run_agent(
                     last_evidence_count = len(evidence_ids)
                     continue
 
-                if tool == "shell" and query_family and query_family in recent_query_families and len(recent_query_families) < QUERY_MUTATION_BUDGET:
+                if tool in {"shell", "brave_search", "brave_news"} and query_family and query_family in recent_query_families and len(recent_query_families) < QUERY_MUTATION_BUDGET:
                     obs = {
                         "error": (
                             "Action Blocked: query mutation required before retrying. "
@@ -1648,17 +1659,28 @@ def run_agent(
                         time.sleep(wait)
 
                 try:
-                    if tool != "shell":
-                        obs = {
-                            "error": f"Unknown tool (shell-only mode): {tool}",
-                            "hint": "Use the shell tool only. If you need the internet, do it from the shell.",
-                        }
-                    else:
+                    if tool == "shell":
                         obs = tb.shell(args.get("cmd", ""))
                         if obs.get("exit_code") != 0:
                             c = args.get("cmd", "")
                             if "echo" in c and "'" in c and "command not found" in obs.get("output", ""):
                                 obs["hint"] = "Check your quotes. You might have an unescaped single quote inside a single-quoted string."
+                    elif tool in {"brave_search", "brave_news"}:
+                        if not isinstance(args, dict):
+                            obs = {"error": "Invalid args for brave_search", "error_type": "bad_args"}
+                        else:
+                            query = args.get("q") or args.get("query")
+                            params = {k: v for k, v in args.items() if k not in {"q", "query", "endpoint"}}
+                            endpoint = "news" if tool == "brave_news" else (args.get("endpoint") or "web")
+                            if not isinstance(query, str) or not query.strip():
+                                obs = {"error": "Missing query for Brave search", "error_type": "missing_query"}
+                            else:
+                                obs = tb.brave_search(query, params=params, endpoint=endpoint)
+                    else:
+                        obs = {
+                            "error": f"Unknown tool (shell-only mode): {tool}",
+                            "hint": "Use the shell tool, or brave_search/brave_news if configured.",
+                        }
                 except Exception as e:
                     obs = {"error": str(e), "error_type": e.__class__.__name__}
 

@@ -34,7 +34,10 @@ High-level reliability guidance (no rigid format):
 - If a tool fails or a source cannot be accessed, treat the corresponding claim as unknown until you verify via alternative sources or methods.
 
 Environment interaction:
-- You can interact with the sandbox by requesting actions (running commands, reading/writing files, fetching URLs).
+- You can interact by requesting actions using tools.
+- Available tools:
+  - shell: run Linux commands inside the sandbox.
+  - brave_search / brave_news: query the Brave Search API (only if BRAVE_API_KEY is configured).
 - When you do, emit a single-line JSON object describing the action so the runtime can execute it and return the observation.
 
 Output format (strict):
@@ -44,5 +47,8 @@ Output format (strict):
   - `EVIDENCE_USED: [ev_0001, ev_0002, ...]` (use `[]` if none yet)
   - `STATUS_UPDATE: IN_PROGRESS | BLOCKED(reason) | UNRESOLVED(reason) | VERIFIED`
 - If you are calling the shell, the JSON must include `tool` and `args` with a `cmd`.
+- If you are calling Brave search, use:
+  - `{"tool":"brave_search","args":{"q":"...","count":10,"freshness":"week","country":"us","search_lang":"en"}}`
+  - Use `brave_news` for news-specific queries (same args, news endpoint).
 - If you are not calling a tool, set `tool` to null and put the final answer in a `final` field.
 - Do not include any other text outside the THOUGHT line, the JSON line, and the two status lines.

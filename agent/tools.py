@@ -4,6 +4,7 @@ import os
 import re
 import time
 import posixpath
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,6 +18,10 @@ try:
     import docker
 except ImportError:
     docker = None
+try:
+    import requests
+except ImportError:
+    requests = None
 
 VENV_DIR = "/work/.venv"
 
@@ -160,6 +165,7 @@ class ToolBelt:
         self.sandbox = sandbox
         # Kept for backward compatibility with older runners, but not used in shell-only mode.
         self.brave_api_key = brave_api_key
+        self.brave_api_version = os.getenv("BRAVE_API_VERSION", "").strip()
         self.cwd = "/work"
         self.env: Dict[str, str] = {}
 
@@ -250,3 +256,77 @@ class ToolBelt:
         wrapped = self._wrap_cmd(cmd)
         code, out = self.sm.exec(self.sandbox, ["bash", "-lc", wrapped], timeout_s=MAX_TOOL_SECONDS)
         return {"exit_code": code, "output": out[-12000:], "cwd": self.cwd}
+
+    def brave_search(self, query: str, params: Optional[Dict[str, Any]] = None, endpoint: str = "web") -> Dict[str, Any]:
+        if requests is None:
+            raise RuntimeError("Missing dependency: pip install requests")
+        if not self.brave_api_key:
+            raise RuntimeError("Missing BRAVE_API_KEY")
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("Missing query")
+
+        endpoint = "news" if str(endpoint).strip().lower() == "news" else "web"
+        url = f"https://api.search.brave.com/res/v1/{endpoint}/search"
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": self.brave_api_key,
+        }
+        if self.brave_api_version:
+            headers["Api-Version"] = self.brave_api_version
+
+        params = dict(params or {})
+        if "language" in params and "search_lang" not in params:
+            params["search_lang"] = params.pop("language")
+        if "safe_search" in params and "safesearch" not in params:
+            params["safesearch"] = params.pop("safe_search")
+
+        qparams = {"q": query}
+        for k, v in params.items():
+            if v is None:
+                continue
+            qparams[k] = v
+
+        try:
+            resp = requests.get(url, headers=headers, params=qparams, timeout=20)
+        except Exception as e:
+            return {"error": str(e), "error_type": e.__class__.__name__}
+
+        obs: Dict[str, Any] = {
+            "status_code": resp.status_code,
+            "query": query,
+            "endpoint": endpoint,
+            "params": qparams,
+        }
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+
+        if resp.status_code >= 400:
+            obs["error"] = (data.get("error") if isinstance(data, dict) else resp.text[:1200])
+            obs["error_type"] = "rate_limited" if resp.status_code == 429 else "http_error"
+        else:
+            items: List[Dict[str, Any]] = []
+            if isinstance(data, dict):
+                bucket = data.get("news" if endpoint == "news" else "web") or data
+                results = bucket.get("results") if isinstance(bucket, dict) else None
+                if isinstance(results, list):
+                    limit = int(qparams.get("count") or 10)
+                    for r in results[: max(1, min(limit, 25))]:
+                        if not isinstance(r, dict):
+                            continue
+                        items.append(
+                            {
+                                "title": r.get("title") or r.get("name"),
+                                "url": r.get("url") or r.get("link"),
+                                "snippet": r.get("description") or r.get("snippet"),
+                                "source": r.get("source"),
+                                "age": r.get("age"),
+                            }
+                        )
+            obs["items"] = items
+            if data is None:
+                obs["output"] = (resp.text or "")[:4000]
+        return obs
