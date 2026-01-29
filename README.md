@@ -300,7 +300,9 @@ This is a research prototype: review deny patterns and add policy/allowlists bef
 ## Important behavior notes
 
 - Tool execution still requires a parseable JSON tool call, but the parser now accepts either `{"tool":"shell","args":{"cmd":"..."}}` or `{"tool":"shell","command":"..."}`, and can recover JSON from fenced blocks.
-- Optional Brave Search tool: the agent can call `brave_search` / `brave_news` directly (no shell) when `BRAVE_API_KEY` is set. Example: `{"tool":"brave_search","args":{"q":"windows 12","count":5,"freshness":"month","country":"us","search_lang":"en"}}`.
+- Optional Brave Search tool: the agent can call `brave_search` / `brave_news` directly (no shell) when `BRAVE_API_KEY` is set. Example: `{"tool":"brave_search","args":{"q":"windows 12","count":12,"freshness":"month","country":"us","search_lang":"en"}}`.
+- Brave discovery-first (when enabled): for web-facing tasks, the agent must do **one** Brave search (`brave_search`/`brave_news`) before any `curl/wget`. This seeds a URL set, then the agent is expected to fetch those URLs with `curl/wget` for evidence.
+- Brave URL fallback: if a Brave-provided URL returns empty/low-signal content via `curl/wget`, the agent should **assume the URL is valid** and try client-side rendering (e.g., Playwright) before abandoning the source.
 - If a model talks about using tools but does not call them, you will see model/verifier events but few `tool` events in `trace.jsonl`.
 - A lightweight policy layer nudges the agent before the first tool call and when the model hits `finish_reason="length"` repeatedly; these show up as `policy_*` metrics and events.
 - Context is now **deterministic**: each step reassembles the prompt from System + PRIMARY TASK + pinned `notes.md` + a short action tail (no FIFO clipping of the middle).
@@ -350,7 +352,7 @@ This is a research prototype: review deny patterns and add policy/allowlists bef
 - Defaults were relaxed for exploration: `--max-steps` now defaults to `80` and tool timeouts are longer (`MAX_TOOL_SECONDS=900`). You can set unlimited steps with `--max-steps 0` or `MAX_STEPS=0`.
 - Model request timeout defaults to `150s` and can be overridden with `MODEL_TIMEOUT` env var.
 - Tooling caches are routed into `/work/.cache` (pip/npm/playwright) to make runtime installs more reliable across steps.
-- Brave API token: set `BRAVE_API_KEY` (or pass `--brave-api-key` to `run.py`). Optional `BRAVE_API_VERSION` sets the API version header. Use `brave_news` for news-only queries.
+- Brave API token: set `BRAVE_API_KEY` (or pass `--brave-api-key` to `run.py`). Optional `BRAVE_API_VERSION` sets the API version header. Use `brave_news` for news-only queries. Defaults: `BRAVE_DEFAULT_COUNT=12`. Discovery-first policy can be toggled with `BRAVE_DISCOVERY_REQUIRED=0`.
 - Brave Search API throttling (optional): `BRAVE_MIN_INTERVAL`, `BRAVE_BACKOFF_MAX`, `BRAVE_COOLDOWN_S`, `BRAVE_MAX_CONSEC_429`, and `BRAVE_MAX_CALLS` enforce rate limits, exponential backoff, and a circuit breaker.
 
 ## Roadmap (Likely Next)

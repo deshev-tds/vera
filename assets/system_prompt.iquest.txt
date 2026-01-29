@@ -56,7 +56,9 @@ Output format (strict):
   - `STATUS_UPDATE: IN_PROGRESS | BLOCKED(reason) | UNRESOLVED(reason) | VERIFIED`
 - If you are calling the shell, the JSON must include `tool` and `args` with a `cmd`.
 - If you are calling Brave search, use:
-  - `{"tool":"brave_search","args":{"q":"...","count":10,"freshness":"week","country":"us","search_lang":"en"}}`
+  - `{"tool":"brave_search","args":{"q":"...","count":12,"freshness":"week","country":"us","search_lang":"en"}}`
   - Use `brave_news` for news-specific queries (same args, news endpoint).
+- For web-facing tasks: if Brave is available, start with **one** Brave search (count=12) to get URLs, then fetch those URLs via `curl/wget` for details and evidence.
+- If a Brave-provided URL yields empty/low-signal content via `curl/wget`, assume the URL is still valid and explore client-side rendering (e.g., Playwright via Python) before abandoning the source.
 - If you are not calling a tool, set `tool` to null and put the final answer in a `final` field.
 - Do not include any other text outside the THOUGHT line, the JSON line, and the two status lines.

@@ -422,11 +422,14 @@ def run_agent(
     BRAVE_COOLDOWN_S = float(os.getenv("BRAVE_COOLDOWN_S", "60"))
     BRAVE_MAX_CONSEC_429 = int(os.getenv("BRAVE_MAX_CONSEC_429", "2"))
     BRAVE_MAX_CALLS = int(os.getenv("BRAVE_MAX_CALLS", "0"))
+    BRAVE_DEFAULT_COUNT = int(os.getenv("BRAVE_DEFAULT_COUNT", "12"))
+    BRAVE_DISCOVERY_REQUIRED = os.getenv("BRAVE_DISCOVERY_REQUIRED", "1") != "0"
     brave_next_allowed_ts = 0.0
     brave_backoff_s = BRAVE_MIN_INTERVAL
     brave_consec_429 = 0
     brave_circuit_until = 0.0
     brave_calls = 0
+    brave_discovery_done = False
 
     def _normalize_domain(domain: str | None) -> str | None:
         if not domain:
@@ -447,6 +450,7 @@ def run_agent(
                 "bing.com",
                 "duckduckgo.com",
                 "search.brave.com",
+                "api.search.brave.com",
                 "yahoo.com",
             )
         )
@@ -483,6 +487,21 @@ def run_agent(
         )
 
     negative_claim_task = _is_negative_claim_task(task)
+
+    def _is_web_task(task_text: str) -> bool:
+        if not task_text:
+            return False
+        if re.search(r"https?://|www\.", task_text, flags=re.I):
+            return True
+        return bool(
+            re.search(
+                r"\b(find|search|look up|lookup|latest|news|official|source|press release|announcement|website|web)\b",
+                task_text.lower(),
+            )
+        )
+
+    web_task = _is_web_task(task) or negative_claim_task
+    brave_discovery_required = bool(brave_api_key) and BRAVE_DISCOVERY_REQUIRED and web_task
 
     def _negative_claim_budget(max_steps_val: int) -> int:
         if max_steps_val > 0:
@@ -1241,6 +1260,8 @@ def run_agent(
                 domain = _extract_domain(primary_url) if primary_url else None
                 query = _extract_query_from_url(primary_url) if primary_url else None
                 if tool in {"brave_search", "brave_news"} and isinstance(args, dict):
+                    if "count" not in args:
+                        args["count"] = BRAVE_DEFAULT_COUNT
                     query = args.get("q") or args.get("query")
                     domain = "api.search.brave.com"
                 query_family = _normalize_query(query) if query else None
@@ -1313,6 +1334,69 @@ def run_agent(
                     )
                     trace_event({"type": "tool", "step": step, "tool": tool, "args": args, "obs": obs})
                     ev_id = record_evidence(step, tool, args, obs)
+                    tool_calls_made += 1
+                    notes_append(
+                        f"\n\n## Step {step}\n"
+                        f"TOOL: {tool}\n"
+                        f"ARGS: {json.dumps(args, ensure_ascii=False)}\n"
+                        f"OBS: {json.dumps(obs, ensure_ascii=False)[:2000]}\n"
+                        f"EVIDENCE_ID: {ev_id}\n"
+                    )
+                    force_tool_next = False
+                    stagnation_streak = 0
+                    last_evidence_count = len(evidence_ids)
+                    continue
+
+                if brave_discovery_required and not brave_discovery_done and tool not in {"brave_search", "brave_news"}:
+                    obs = {
+                        "error": (
+                            "Action Blocked: run a Brave discovery search first. "
+                            f"Use brave_search/brave_news with count={BRAVE_DEFAULT_COUNT}."
+                        ),
+                        "error_type": "brave_discovery_required",
+                    }
+                    trace_event(
+                        {
+                            "type": "policy_brave_discovery",
+                            "step": step,
+                            "required": True,
+                            "default_count": BRAVE_DEFAULT_COUNT,
+                        }
+                    )
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": "OBSERVATION:\n" + json.dumps({"tool": tool, "obs": obs}, ensure_ascii=False)[:12000],
+                        }
+                    )
+                    trace_event({"type": "tool", "step": step, "tool": tool, "args": args, "obs": obs})
+                    ev_id = record_evidence(step, tool, args, obs)
+                    record_move(
+                        step,
+                        tool,
+                        cmd,
+                        primary_url,
+                        domain,
+                        query,
+                        query_family,
+                        source_class,
+                        move_type,
+                        move_sig,
+                        last_failure_type,
+                        "blocked",
+                    )
+                    if query_family:
+                        record_query(
+                            step,
+                            primary_url,
+                            domain,
+                            query,
+                            query_family,
+                            source_class,
+                            move_type,
+                            query_vector,
+                            "blocked",
+                        )
                     tool_calls_made += 1
                     notes_append(
                         f"\n\n## Step {step}\n"
@@ -1684,6 +1768,8 @@ def run_agent(
                 except Exception as e:
                     obs = {"error": str(e), "error_type": e.__class__.__name__}
 
+                if tool in {"brave_search", "brave_news"}:
+                    brave_discovery_done = True
                 history.append({"role": "user", "content": "OBSERVATION:\n" + json.dumps({"tool": tool, "obs": obs}, ensure_ascii=False)[:12000]})
                 trace_event({"type": "tool", "step": step, "tool": tool, "args": args, "obs": obs})
                 ev_id = record_evidence(step, tool, args, obs)
