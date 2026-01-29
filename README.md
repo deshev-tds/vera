@@ -1,4 +1,4 @@
-# VERA — Verification-Enabled Research Agent
+# VERA - Verification-Enabled Research Agent
 
 A proof-of-concept “Verification-Enabled Research Agent” (VERA) that runs **locally**, with full root permissions in a Linux **Docker sandbox**, can browse the public internet, read/write mounted files, run Linux commands + Python, and uses a **test-time verification loop** to reduce hallucinations and enforce evidence-grounded outputs.
 
@@ -84,7 +84,7 @@ We want “install at runtime” behavior. We bootstrap `/work/.venv` and put it
 
 ### 2.1) Lab-mode privilege (maximum freedom)
 
-The sandbox currently runs **privileged** to enable unrestricted experimentation (including OS package installs and low-level network changes). This is intentional for the “emergent behavior” lab setting, but it removes most isolation guardrails—use only on trusted, local machines.
+The sandbox currently runs **privileged** to enable unrestricted experimentation (including OS package installs and low-level network changes). This is intentional for the “emergent behavior” lab setting, but it removes most isolation guardrails-use only on trusted, local machines.
 
 ### 3) Persistent-ish shell ergonomics
 
