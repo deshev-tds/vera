@@ -240,9 +240,12 @@ bash stop_stack.sh
   - `dra_policy_choice_total`
   - `dra_policy_choice_matched_total`
   - `dra_policy_stagnation_total`
+  - `dra_policy_query_vector_total`
   - `dra_policy_domain_shift_total`
   - `dra_policy_conclusion_ready_total`
   - `dra_policy_source_budget_total`
+  - `dra_policy_brave_budget_total`
+  - `dra_policy_brave_circuit_total`
   - `dra_verifier_gradient_total`
 
 ## Safety Notes (POC)
@@ -292,6 +295,7 @@ This is a research prototype: review deny patterns and add policy/allowlists bef
     ```
 - The verifier runs in a **clean-room** “Auditor” persona and does not reuse the worker’s chat history (only task + notes + evidence).
 - Stagnation detector: if `UNRESOLVED` repeats without new evidence for `STAGNATION_LIMIT` turns, the agent is forced to run a tool; repeated failure types prompt escalation (`FAILURE_ESCALATION_LIMIT`).
+- Query-vector gating (negative-claim tasks): repeated intent class before `QUERY_VECTOR_MIN` vectors are used forces a switch in search intent (`policy_query_vector`).
 - Source budget: after `SOURCE_BUDGET` distinct non-search domains are checked without verification, the run exits as `UNRESOLVED` with a source-exhaustion summary (`policy_source_budget`).
 - Negative-claim protocol (e.g., “has X launched yet?”):
   - Minimum source coverage is enforced before any “no official announcement found” conclusion:
@@ -304,6 +308,7 @@ This is a research prototype: review deny patterns and add policy/allowlists bef
 - Defaults were relaxed for exploration: `--max-steps` now defaults to `80` and tool timeouts are longer (`MAX_TOOL_SECONDS=900`). You can set unlimited steps with `--max-steps 0` or `MAX_STEPS=0`.
 - Model request timeout defaults to `150s` and can be overridden with `MODEL_TIMEOUT` env var.
 - Tooling caches are routed into `/work/.cache` (pip/npm/playwright) to make runtime installs more reliable across steps.
+- Brave Search API throttling (optional): `BRAVE_MIN_INTERVAL`, `BRAVE_BACKOFF_MAX`, `BRAVE_COOLDOWN_S`, `BRAVE_MAX_CONSEC_429`, and `BRAVE_MAX_CALLS` enforce rate limits, exponential backoff, and a circuit breaker.
 
 ## Roadmap (Likely Next)
 

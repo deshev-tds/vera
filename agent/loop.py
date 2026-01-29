@@ -384,10 +384,12 @@ def run_agent(
     force_move_change = False
     force_source_shift = False
     force_domain_shift = False
+    force_query_vector_shift = False
     STAGNATION_LIMIT = int(os.getenv("STAGNATION_LIMIT", "3"))
     FAILURE_ESCALATION_LIMIT = int(os.getenv("FAILURE_ESCALATION_LIMIT", "3"))
     QUERY_MUTATION_BUDGET = int(os.getenv("QUERY_MUTATION_BUDGET", "2"))
     SOURCE_BUDGET = int(os.getenv("SOURCE_BUDGET", "12"))
+    QUERY_VECTOR_MIN = int(os.getenv("QUERY_VECTOR_MIN", "2"))
     MOVE_REPEAT_LIMIT = int(os.getenv("MOVE_REPEAT_LIMIT", "3"))
     parse_error_hits = 0
     notes_required = False
@@ -405,14 +407,26 @@ def run_agent(
     last_domain: str | None = None
     last_domain_key: str | None = None
     last_query_family: str | None = None
+    last_query_vector: str | None = None
     move_repeat_streak = 0
     domain_same_streak = 0
     recent_query_families: deque[str] = deque(maxlen=max(QUERY_MUTATION_BUDGET, 1))
+    query_vectors_seen: set[str] = set()
     official_domain_hints: set[str] = set()
     official_domains_checked: set[str] = set()
     independent_domains_checked: set[str] = set()
     all_domains_checked: set[str] = set()
     domain_attempts: dict[str, int] = {}
+    BRAVE_MIN_INTERVAL = float(os.getenv("BRAVE_MIN_INTERVAL", "1.05"))
+    BRAVE_BACKOFF_MAX = float(os.getenv("BRAVE_BACKOFF_MAX", "10"))
+    BRAVE_COOLDOWN_S = float(os.getenv("BRAVE_COOLDOWN_S", "60"))
+    BRAVE_MAX_CONSEC_429 = int(os.getenv("BRAVE_MAX_CONSEC_429", "2"))
+    BRAVE_MAX_CALLS = int(os.getenv("BRAVE_MAX_CALLS", "0"))
+    brave_next_allowed_ts = 0.0
+    brave_backoff_s = BRAVE_MIN_INTERVAL
+    brave_consec_429 = 0
+    brave_circuit_until = 0.0
+    brave_calls = 0
 
     def _normalize_domain(domain: str | None) -> str | None:
         if not domain:
@@ -544,6 +558,23 @@ def run_agent(
         stop = {"the", "a", "an", "of", "for", "and", "to", "in", "on", "with", "by", "from"}
         tokens = [t for t in tokens if t not in stop]
         return " ".join(tokens)
+
+    def _classify_query_vector(cmd: str | None, query: str | None, domain: str | None) -> str:
+        text = f"{cmd or ''} {query or ''} {domain or ''}".lower()
+        if _is_official_domain(domain):
+            return "ground_truth"
+        if re.search(r"\b(official|press|release|announcement|newsroom|blog)\b", text):
+            return "ground_truth"
+        if re.search(r"\b(rumor|leak|concept|fake|hoax|torrent|iso|download|malware|scam)\b", text):
+            return "context"
+        if _is_search_domain(domain):
+            return "search"
+        return "general"
+
+    def _uses_brave_api(cmd: str) -> bool:
+        if not cmd:
+            return False
+        return "api.search.brave.com" in cmd
 
     def _classify_source(url: str | None, domain: str | None) -> str:
         if not domain:
@@ -684,7 +715,7 @@ def run_agent(
         return mv_id
 
     def record_query(step: int, url: str | None, domain: str | None, query: str | None, query_family: str | None,
-                     source_class: str, move_type: str, outcome: str) -> str:
+                     source_class: str, move_type: str, query_vector: str, outcome: str) -> str:
         nonlocal query_counter
         query_counter += 1
         q_id = f"q_{query_counter:04d}"
@@ -698,6 +729,7 @@ def run_agent(
             "query_family": query_family,
             "source_class": source_class,
             "move_type": move_type,
+            "query_vector": query_vector,
             "outcome": outcome,
         }
         _append_jsonl(query_path, payload)
@@ -1008,6 +1040,11 @@ def run_agent(
                     epistemic.add_constraint(
                         f"Stagnation: no new evidence for {stagnation_streak} consecutive turns"
                     )
+                    if negative_claim_task and len(query_vectors_seen) < QUERY_VECTOR_MIN:
+                        force_query_vector_shift = True
+                        epistemic.add_constraint(
+                            f"Query-vector shift required: {len(query_vectors_seen)}/{QUERY_VECTOR_MIN} intent classes used"
+                        )
                     trace_event(
                         {
                             "type": "policy_stagnation",
@@ -1198,9 +1235,11 @@ def run_agent(
                 domain = _extract_domain(primary_url) if primary_url else None
                 query = _extract_query_from_url(primary_url) if primary_url else None
                 query_family = _normalize_query(query) if query else None
+                query_vector = _classify_query_vector(cmd, query, domain)
                 source_class = _classify_source(primary_url, domain)
                 move_type = _classify_move(domain, query_family, source_class)
                 move_sig = f"{move_type}:{domain or '-'}:{query_family or '-'}"
+                uses_brave = tool == "shell" and _uses_brave_api(cmd)
 
                 if tool == "shell" and notes_mode == "overwrite":
                     obs = {
@@ -1324,6 +1363,7 @@ def run_agent(
                         query_family,
                         source_class,
                         move_type,
+                        query_vector,
                         "blocked",
                     )
                     tool_calls_made += 1
@@ -1335,6 +1375,72 @@ def run_agent(
                         f"EVIDENCE_ID: {ev_id}\n"
                     )
                     force_query_mutation = True
+                    force_tool_next = False
+                    stagnation_streak = 0
+                    last_evidence_count = len(evidence_ids)
+                    continue
+
+                if negative_claim_task and force_query_vector_shift and query_vector == last_query_vector:
+                    obs = {
+                        "error": (
+                            "Action Blocked: query vector shift required. "
+                            "Use a different search intent (ground_truth vs context/rumor)."
+                        ),
+                        "error_type": "query_vector_required",
+                    }
+                    trace_event(
+                        {
+                            "type": "policy_query_vector",
+                            "step": step,
+                            "required": QUERY_VECTOR_MIN,
+                            "seen": len(query_vectors_seen),
+                            "current": query_vector,
+                            "last": last_query_vector,
+                        }
+                    )
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": "OBSERVATION:\n" + json.dumps({"tool": tool, "obs": obs}, ensure_ascii=False)[:12000],
+                        }
+                    )
+                    trace_event({"type": "tool", "step": step, "tool": tool, "args": args, "obs": obs})
+                    ev_id = record_evidence(step, tool, args, obs)
+                    record_move(
+                        step,
+                        tool,
+                        cmd,
+                        primary_url,
+                        domain,
+                        query,
+                        query_family,
+                        source_class,
+                        move_type,
+                        move_sig,
+                        last_failure_type,
+                        "blocked",
+                    )
+                    if query_family:
+                        record_query(
+                            step,
+                            primary_url,
+                            domain,
+                            query,
+                            query_family,
+                            source_class,
+                            move_type,
+                            query_vector,
+                            "blocked",
+                        )
+                    tool_calls_made += 1
+                    notes_append(
+                        f"\n\n## Step {step}\n"
+                        f"TOOL: {tool}\n"
+                        f"ARGS: {json.dumps(args, ensure_ascii=False)}\n"
+                        f"OBS: {json.dumps(obs, ensure_ascii=False)[:2000]}\n"
+                        f"EVIDENCE_ID: {ev_id}\n"
+                    )
+                    force_query_vector_shift = True
                     force_tool_next = False
                     stagnation_streak = 0
                     last_evidence_count = len(evidence_ids)
@@ -1397,6 +1503,7 @@ def run_agent(
                             query_family,
                             source_class,
                             move_type,
+                            query_vector,
                             "blocked",
                         )
                     tool_calls_made += 1
@@ -1411,6 +1518,134 @@ def run_agent(
                     stagnation_streak = 0
                     last_evidence_count = len(evidence_ids)
                     continue
+
+                if uses_brave:
+                    now = time.time()
+                    if BRAVE_MAX_CALLS > 0 and brave_calls >= BRAVE_MAX_CALLS:
+                        obs = {
+                            "error": (
+                                "Action Blocked: Brave API request budget exhausted for this run."
+                            ),
+                            "error_type": "brave_budget_exhausted",
+                        }
+                        trace_event(
+                            {
+                                "type": "policy_brave_budget",
+                                "step": step,
+                                "max_calls": BRAVE_MAX_CALLS,
+                                "calls": brave_calls,
+                            }
+                        )
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": "OBSERVATION:\n" + json.dumps({"tool": tool, "obs": obs}, ensure_ascii=False)[:12000],
+                            }
+                        )
+                        trace_event({"type": "tool", "step": step, "tool": tool, "args": args, "obs": obs})
+                        ev_id = record_evidence(step, tool, args, obs)
+                        record_move(
+                            step,
+                            tool,
+                            cmd,
+                            primary_url,
+                            domain,
+                            query,
+                            query_family,
+                            source_class,
+                            move_type,
+                            move_sig,
+                            last_failure_type,
+                            "blocked",
+                        )
+                        if query_family:
+                            record_query(
+                                step,
+                                primary_url,
+                                domain,
+                                query,
+                                query_family,
+                                source_class,
+                                move_type,
+                                query_vector,
+                                "blocked",
+                            )
+                        tool_calls_made += 1
+                        notes_append(
+                            f"\n\n## Step {step}\n"
+                            f"TOOL: {tool}\n"
+                            f"ARGS: {json.dumps(args, ensure_ascii=False)}\n"
+                            f"OBS: {json.dumps(obs, ensure_ascii=False)[:2000]}\n"
+                            f"EVIDENCE_ID: {ev_id}\n"
+                        )
+                        force_tool_next = False
+                        stagnation_streak = 0
+                        last_evidence_count = len(evidence_ids)
+                        continue
+                    if brave_circuit_until and now < brave_circuit_until:
+                        obs = {
+                            "error": (
+                                "Action Blocked: Brave API circuit breaker open. "
+                                "Wait before retrying."
+                            ),
+                            "error_type": "brave_circuit_open",
+                        }
+                        trace_event(
+                            {
+                                "type": "policy_brave_circuit",
+                                "step": step,
+                                "cooldown_until": brave_circuit_until,
+                            }
+                        )
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": "OBSERVATION:\n" + json.dumps({"tool": tool, "obs": obs}, ensure_ascii=False)[:12000],
+                            }
+                        )
+                        trace_event({"type": "tool", "step": step, "tool": tool, "args": args, "obs": obs})
+                        ev_id = record_evidence(step, tool, args, obs)
+                        record_move(
+                            step,
+                            tool,
+                            cmd,
+                            primary_url,
+                            domain,
+                            query,
+                            query_family,
+                            source_class,
+                            move_type,
+                            move_sig,
+                            last_failure_type,
+                            "blocked",
+                        )
+                        if query_family:
+                            record_query(
+                                step,
+                                primary_url,
+                                domain,
+                                query,
+                                query_family,
+                                source_class,
+                                move_type,
+                                query_vector,
+                                "blocked",
+                            )
+                        tool_calls_made += 1
+                        notes_append(
+                            f"\n\n## Step {step}\n"
+                            f"TOOL: {tool}\n"
+                            f"ARGS: {json.dumps(args, ensure_ascii=False)}\n"
+                            f"OBS: {json.dumps(obs, ensure_ascii=False)[:2000]}\n"
+                            f"EVIDENCE_ID: {ev_id}\n"
+                        )
+                        force_tool_next = False
+                        stagnation_streak = 0
+                        last_evidence_count = len(evidence_ids)
+                        continue
+                    wait = brave_next_allowed_ts - now
+                    if wait > 0:
+                        time.sleep(wait)
 
                 try:
                     if tool != "shell":
@@ -1456,8 +1691,36 @@ def run_agent(
                         query_family,
                         source_class,
                         move_type,
+                        query_vector,
                         outcome,
                     )
+                if query_vector:
+                    query_vectors_seen.add(query_vector)
+                    if last_query_vector != query_vector:
+                        last_query_vector = query_vector
+                    if len(query_vectors_seen) >= QUERY_VECTOR_MIN:
+                        force_query_vector_shift = False
+                if uses_brave:
+                    brave_calls += 1
+                    now = time.time()
+                    if failure_type == "rate_limited" or re.search(r"\b429\b", str((obs or {}).get("output") or "")):
+                        brave_consec_429 += 1
+                        brave_backoff_s = min(BRAVE_BACKOFF_MAX, max(BRAVE_MIN_INTERVAL, brave_backoff_s * 2))
+                        brave_next_allowed_ts = now + brave_backoff_s
+                        if brave_consec_429 >= BRAVE_MAX_CONSEC_429:
+                            brave_circuit_until = now + BRAVE_COOLDOWN_S
+                            trace_event(
+                                {
+                                    "type": "policy_brave_circuit",
+                                    "step": step,
+                                    "cooldown_until": brave_circuit_until,
+                                    "consec_429": brave_consec_429,
+                                }
+                            )
+                    else:
+                        brave_consec_429 = 0
+                        brave_backoff_s = BRAVE_MIN_INTERVAL
+                        brave_next_allowed_ts = now + BRAVE_MIN_INTERVAL
                 if notes_required and tool == "shell" and notes_mode == "append":
                     notes_required = False
 
