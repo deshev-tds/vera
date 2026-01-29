@@ -491,7 +491,8 @@ def run_agent(
     if negative_claim_task:
         epistemic.add_constraint(
             "Negative-claim task: require ≥2 official domains and ≥1 independent domain before concluding "
-            "'no official announcement found'. Do not assert non-launch without explicit denial."
+            "'no official announcement found in sources checked'. Do not assert non-launch; explicit denial is "
+            "optional (only cite it if found)."
         )
 
     def _extract_urls(text: str) -> list[str]:
