@@ -35,6 +35,11 @@ MAX_MODEL_IO_RESPONSE_CHARS = 12000
 CONTEXT_MAX_CHARS = int(os.getenv("CONTEXT_MAX_CHARS", "20000"))
 ACTION_TAIL_MESSAGES = int(os.getenv("ACTION_TAIL_MESSAGES", "10"))
 NOTES_UPDATE_INTERVAL = int(os.getenv("NOTES_UPDATE_INTERVAL", "3"))
+NEGATIVE_CLAIM_MIN_OFFICIAL = int(os.getenv("NEGATIVE_CLAIM_MIN_OFFICIAL", "2"))
+NEGATIVE_CLAIM_MIN_INDEPENDENT = int(os.getenv("NEGATIVE_CLAIM_MIN_INDEPENDENT", "1"))
+NEGATIVE_CLAIM_THRESHOLD_PCT = float(os.getenv("NEGATIVE_CLAIM_THRESHOLD_PCT", "0.6"))
+NEGATIVE_CLAIM_MAX_STEPS = int(os.getenv("NEGATIVE_CLAIM_MAX_STEPS", "40"))
+DOMAIN_SHIFT_LIMIT = int(os.getenv("DOMAIN_SHIFT_LIMIT", "2"))
 
 def _clip_text(text: str, max_chars: int) -> str:
     if not isinstance(text, str):
@@ -378,6 +383,7 @@ def run_agent(
     force_query_mutation = False
     force_move_change = False
     force_source_shift = False
+    force_domain_shift = False
     STAGNATION_LIMIT = int(os.getenv("STAGNATION_LIMIT", "3"))
     FAILURE_ESCALATION_LIMIT = int(os.getenv("FAILURE_ESCALATION_LIMIT", "3"))
     QUERY_MUTATION_BUDGET = int(os.getenv("QUERY_MUTATION_BUDGET", "2"))
@@ -396,9 +402,97 @@ def run_agent(
     last_move_sig: str | None = None
     last_move_type: str | None = None
     last_domain: str | None = None
+    last_domain_key: str | None = None
     last_query_family: str | None = None
     move_repeat_streak = 0
+    domain_same_streak = 0
     recent_query_families: deque[str] = deque(maxlen=max(QUERY_MUTATION_BUDGET, 1))
+    official_domain_hints: set[str] = set()
+    official_domains_checked: set[str] = set()
+    independent_domains_checked: set[str] = set()
+    domain_attempts: dict[str, int] = {}
+
+    def _normalize_domain(domain: str | None) -> str | None:
+        if not domain:
+            return None
+        d = domain.lower()
+        if d.startswith("www."):
+            d = d[4:]
+        return d
+
+    def _is_search_domain(domain: str | None) -> bool:
+        if not domain:
+            return False
+        d = _normalize_domain(domain) or ""
+        return any(
+            d.endswith(x)
+            for x in (
+                "google.com",
+                "bing.com",
+                "duckduckgo.com",
+                "search.brave.com",
+                "yahoo.com",
+            )
+        )
+
+    def _task_domain_tokens(task_text: str) -> set[str]:
+        if not task_text:
+            return set()
+        tokens = re.findall(r"[A-Za-z0-9]{3,}", task_text)
+        stop = {
+            "the", "a", "an", "of", "for", "and", "to", "in", "on", "with", "by",
+            "from", "official", "launch", "released", "release", "version", "report",
+            "true", "false", "yet", "still", "actually", "already",
+        }
+        out = set()
+        for t in tokens:
+            tl = t.lower()
+            if tl in stop:
+                continue
+            out.add(tl)
+        return out
+
+    task_domain_tokens = _task_domain_tokens(task)
+
+    def _is_negative_claim_task(task_text: str) -> bool:
+        if not task_text:
+            return False
+        t = task_text.lower()
+        return bool(
+            re.search(
+                r"\b(not|no|never|false|yet|still|actually|really)\b", t
+            )
+            or re.search(r"\b(has\s+.*\s+launched|released)\b", t)
+            or re.search(r"\b(is|are)\s+.*\b(out|launched|released)\b", t)
+        )
+
+    negative_claim_task = _is_negative_claim_task(task)
+
+    def _negative_claim_budget(max_steps_val: int) -> int:
+        if max_steps_val > 0:
+            return max(1, int(max_steps_val * NEGATIVE_CLAIM_THRESHOLD_PCT))
+        return max(1, NEGATIVE_CLAIM_MAX_STEPS)
+
+    negative_claim_budget_steps = _negative_claim_budget(max_steps)
+
+    def _is_official_domain(domain: str | None) -> bool:
+        if not domain:
+            return False
+        d = _normalize_domain(domain) or ""
+        if d in official_domain_hints:
+            return True
+        if d.endswith((".gov", ".int", ".eu")):
+            return True
+        for tok in task_domain_tokens:
+            if tok and tok in d:
+                return True
+        return False
+
+    if negative_claim_task:
+        epistemic.add_constraint(
+            "Negative-claim task: require ≥2 official domains and ≥1 independent domain before concluding "
+            "'no official announcement found'. Do not assert non-launch without explicit denial."
+        )
 
     def _extract_urls(text: str) -> list[str]:
         if not text:
@@ -407,7 +501,7 @@ def run_agent(
 
     def _extract_domain(url: str) -> str | None:
         try:
-            return urlparse(url).netloc.lower()
+            return _normalize_domain(urlparse(url).netloc)
         except Exception:
             return None
 
@@ -442,6 +536,8 @@ def run_agent(
         if not domain:
             return "unknown"
         d = domain.lower()
+        if _is_official_domain(d):
+            return "official"
         if d.endswith(".gov") or d.endswith(".eu") or d.endswith(".int"):
             return "regulatory"
         if any(x in d for x in ("pubchem", "chemspider", "drugbank", "clinicaltrials", "who.int")):
@@ -690,6 +786,18 @@ def run_agent(
                         ),
                     }
                 )
+            if force_domain_shift:
+                history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "DOMAIN SHIFT REQUIRED: use a different domain than the last attempt. "
+                            "For negative-claim tasks, ensure at least "
+                            f"{NEGATIVE_CLAIM_MIN_OFFICIAL} official domains and "
+                            f"{NEGATIVE_CLAIM_MIN_INDEPENDENT} independent domains are checked."
+                        ),
+                    }
+                )
             if NOTES_UPDATE_INTERVAL > 0 and step > 0 and (step % NOTES_UPDATE_INTERVAL == 0):
                 notes_required = True
             notes_content = read_notes_content()
@@ -867,6 +975,13 @@ def run_agent(
                     else:
                         epistemic.status = "UNRESOLVED"
                         epistemic.add_constraint("Missing EVIDENCE_USED")
+                if negative_claim_task and step >= negative_claim_budget_steps:
+                    if (
+                        len(official_domains_checked) >= NEGATIVE_CLAIM_MIN_OFFICIAL
+                        and len(independent_domains_checked) >= NEGATIVE_CLAIM_MIN_INDEPENDENT
+                    ):
+                        epistemic.status = "UNRESOLVED"
+                        epistemic.add_unresolved("negative_claim_evidence_exhausted")
                 # Stagnation detector: unresolved without new evidence/tool activity
                 if epistemic.status == "UNRESOLVED":
                     if len(evidence_ids) == last_evidence_count:
@@ -1212,6 +1327,78 @@ def run_agent(
                     last_evidence_count = len(evidence_ids)
                     continue
 
+                domain_key = domain
+                if negative_claim_task and domain_key and last_domain_key == domain_key and domain_same_streak >= DOMAIN_SHIFT_LIMIT:
+                    if (
+                        len(official_domains_checked) < NEGATIVE_CLAIM_MIN_OFFICIAL
+                        or len(independent_domains_checked) < NEGATIVE_CLAIM_MIN_INDEPENDENT
+                    ):
+                        force_domain_shift = True
+
+                if negative_claim_task and force_domain_shift and domain_key and last_domain_key == domain_key:
+                    obs = {
+                        "error": (
+                            "Action Blocked: domain shift required for negative-claim tasks. "
+                            "Use a different domain to meet official/independent source minimums."
+                        ),
+                        "error_type": "domain_shift_required",
+                    }
+                    trace_event(
+                        {
+                            "type": "policy_domain_shift",
+                            "step": step,
+                            "domain": domain_key,
+                            "official_checked": len(official_domains_checked),
+                            "independent_checked": len(independent_domains_checked),
+                            "limit": DOMAIN_SHIFT_LIMIT,
+                        }
+                    )
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": "OBSERVATION:\n" + json.dumps({"tool": tool, "obs": obs}, ensure_ascii=False)[:12000],
+                        }
+                    )
+                    trace_event({"type": "tool", "step": step, "tool": tool, "args": args, "obs": obs})
+                    ev_id = record_evidence(step, tool, args, obs)
+                    record_move(
+                        step,
+                        tool,
+                        cmd,
+                        primary_url,
+                        domain,
+                        query,
+                        query_family,
+                        source_class,
+                        move_type,
+                        move_sig,
+                        last_failure_type,
+                        "blocked",
+                    )
+                    if query_family:
+                        record_query(
+                            step,
+                            primary_url,
+                            domain,
+                            query,
+                            query_family,
+                            source_class,
+                            move_type,
+                            "blocked",
+                        )
+                    tool_calls_made += 1
+                    notes_append(
+                        f"\n\n## Step {step}\n"
+                        f"TOOL: {tool}\n"
+                        f"ARGS: {json.dumps(args, ensure_ascii=False)}\n"
+                        f"OBS: {json.dumps(obs, ensure_ascii=False)[:2000]}\n"
+                        f"EVIDENCE_ID: {ev_id}\n"
+                    )
+                    force_tool_next = False
+                    stagnation_streak = 0
+                    last_evidence_count = len(evidence_ids)
+                    continue
+
                 try:
                     if tool != "shell":
                         obs = {
@@ -1269,6 +1456,21 @@ def run_agent(
                     f"OBS: {json.dumps(obs, ensure_ascii=False)[:2000]}\n"
                     f"EVIDENCE_ID: {ev_id}\n"
                 )
+                if domain_key:
+                    domain_attempts[domain_key] = domain_attempts.get(domain_key, 0) + 1
+                    if negative_claim_task and not _is_search_domain(domain_key) and not official_domain_hints:
+                        official_domain_hints.add(domain_key)
+                    is_official = _is_official_domain(domain_key) or source_class in {"official", "regulatory", "registry"}
+                    if is_official:
+                        official_domains_checked.add(domain_key)
+                    elif not _is_search_domain(domain_key):
+                        independent_domains_checked.add(domain_key)
+                    if last_domain_key == domain_key:
+                        domain_same_streak += 1
+                    else:
+                        domain_same_streak = 0
+                        force_domain_shift = False
+                    last_domain_key = domain_key
                 if query_family and query_family not in recent_query_families:
                     recent_query_families.append(query_family)
                     force_query_mutation = False
