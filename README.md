@@ -2,7 +2,7 @@
 
 A proof-of-concept “Verification-Enabled Research Agent” (VERA) that runs **locally**, with full root permissions in a Linux **Docker sandbox**, can browse the public internet, read/write mounted files, run Linux commands + Python, and uses a **test-time verification loop** to reduce hallucinations and enforce evidence-grounded outputs.
 
-**It seems that when we bring back the "eyes" and the "hands" to an LLM, it beings to show emergent behaviours. In my experiments, a versy small 30B model optimized for coding, agreed with itself to set a very conrete (and meaninfully small) margin of error when performing search thresholds for atmomic masses. Then it drew chemical formulas, compiling the required libraris prior to that - with no human nudge at all!**
+**When an LLM is given real I/O (files, network, shell) and real tools, it can exhibit emergent problem-solving behaviors. In one experiment, a small 30B coding-optimized model independently converged on a strict numerical error tolerance while searching atomic mass data, installed required libraries at runtime, and produced chemical structure diagrams — without any explicit human guidance.**
 
 This repo is explicitly motivated by two complementary research threads:
 
@@ -19,7 +19,7 @@ Agentic systems fail in predictable ways:
 - **Mis-extraction**: wrong number, wrong section, wrong quote.
 - **Tool misuse**: a command fails but the agent proceeds anyway.
 - **Overconfident synthesis**: conclusions not supported by evidence.
-- **Long-horizon drift**: “wandering” over many steps.
+- **Long-horizon drift**: continued synthesis without epistemic progress.
 
 This project exists to make a local agent behave more like an auditable system:
 
@@ -31,11 +31,12 @@ This project exists to make a local agent behave more like an auditable system:
 
 - A Docker sandbox with `/input` (read-only) + `/work` (read-write).
 - A minimal tool protocol: model outputs a single-line JSON tool call.
-- A DeepVerifier-style verifier loop (decompose → verify → judge) with stop-early and a small retry budget.
+- A DeepVerifier-style verifier loop (decompose -> verify -> judge) with stop-early logic and a configurable retry budget.
 - Live “digging” monitoring via a local dashboard:
   - SSE event stream from `trace.jsonl`
   - Prometheus-style `/metrics`
   - Session picker + “New session” + “Start run” UI
+- A non-terminal epistemic state model: missing evidence does not cause failure; tasks remain UNRESOLVED until new evidence is produced or search is exhausted.
 
 ## Repository Layout
 
@@ -75,8 +76,8 @@ Verifier (decompose/check/judge)  trace.jsonl + notes.md
 We follow the “LLM-in-Sandbox” idea: a computer is a universal substrate (files + shell + internet) and can generalize beyond coding when the model is encouraged to explore and use the environment. See [1].
 
 Implementation:
-- host mounts `--work-dir` → `/work` (rw)
-- optionally mount `--input-dir` → `/input` (ro)
+- host mounts `--work-dir` -> `/work` (rw)
+- optionally mount `--input-dir` -> `/input` (ro)
 
 ### 2) Runtime tool acquisition (venv-first, plus OS packages if needed)
 
@@ -84,7 +85,7 @@ We want “install at runtime” behavior. We bootstrap `/work/.venv` and put it
 
 ### 2.1) Lab-mode privilege (maximum freedom)
 
-The sandbox currently runs **privileged** to enable unrestricted experimentation (including OS package installs and low-level network changes). This is intentional for the “emergent behavior” lab setting, but it removes most isolation guardrails-use only on trusted, local machines.
+The sandbox currently runs **privileged** to enable unrestricted experimentation (including OS package installs and low-level network changes). This is intentional for the “emergent behavior” lab setting, but it removes most isolation guardrails. Use only on trusted, local machines.
 
 ### 3) Persistent-ish shell ergonomics
 
@@ -96,7 +97,7 @@ We simulate the most important parts:
 
 (The underlying container exec is still per-call; this is a pragmatic approximation.)
 
-### 4) Verification scaling (decompose → verify → judge)
+### 4) Verification scaling (decompose -> verify -> judge)
 
 Instead of a single “judge the entire answer” prompt, we decompose verification into a few yes/no checks and verify those with tools (asymmetry of verification). This follows the DeepVerifier direction: verification is more reliable when broken into targeted, source-bound questions. See [2].
 
@@ -106,7 +107,7 @@ The verifier:
 - returns a score (1–4) and ≤3 concrete corrective instructions
 - stops early when score ≥ 3; caps verification rounds to avoid diminishing returns
 
-### 5) SCOUT gating (Scope → Candidates → Outcomes)
+### 5) SCOUT gating (Scope -> Candidates -> Outcomes)
 
 Some tasks are structurally easy to answer overconfidently (especially negative claims like “none / no one / never”). To reduce this failure mode, the verifier applies SCOUT-style gating:
 
@@ -122,7 +123,7 @@ Long-horizon agents are hard to debug without visibility. We log a structured ev
 - `/events` (SSE) for live dashboards
 - `/metrics` (Prometheus text format) for graphs and alerting
 
-We also log internal verifier activity (decomposition/judge model calls, per-check tool calls, and verifier→agent feedback injection), so you can audit the end-to-end “digging” process.
+We also log internal verifier activity (decomposition/judge model calls, per-check tool calls, and verifier->agent feedback injection), so you can audit the end-to-end “digging” process.
 Additional observability hooks:
 - Raw model request/response snapshots are captured as `model_io` events and shown in the dashboard (Model I/O panel).
 - Per-session container logs and Docker event stream are written to `/work/container.log` and `/work/container_events.log` and shown in the dashboard (Container Logs panel).
