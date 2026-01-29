@@ -167,7 +167,7 @@ def run_agent(
         except Exception:
             return ""
 
-    MAX_MODEL_NOTE_CHARS = 4000
+    MAX_MODEL_NOTE_CHARS = 6000
 
     def log_model_output(step: int, resp_text: str, tag: str) -> None:
         if not resp_text:
