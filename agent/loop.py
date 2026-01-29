@@ -387,6 +387,7 @@ def run_agent(
     STAGNATION_LIMIT = int(os.getenv("STAGNATION_LIMIT", "3"))
     FAILURE_ESCALATION_LIMIT = int(os.getenv("FAILURE_ESCALATION_LIMIT", "3"))
     QUERY_MUTATION_BUDGET = int(os.getenv("QUERY_MUTATION_BUDGET", "2"))
+    SOURCE_BUDGET = int(os.getenv("SOURCE_BUDGET", "12"))
     MOVE_REPEAT_LIMIT = int(os.getenv("MOVE_REPEAT_LIMIT", "3"))
     parse_error_hits = 0
     notes_required = False
@@ -410,6 +411,7 @@ def run_agent(
     official_domain_hints: set[str] = set()
     official_domains_checked: set[str] = set()
     independent_domains_checked: set[str] = set()
+    all_domains_checked: set[str] = set()
     domain_attempts: dict[str, int] = {}
 
     def _normalize_domain(domain: str | None) -> str | None:
@@ -1471,6 +1473,8 @@ def run_agent(
                     domain_attempts[domain_key] = domain_attempts.get(domain_key, 0) + 1
                     if negative_claim_task and not _is_search_domain(domain_key) and not official_domain_hints:
                         official_domain_hints.add(domain_key)
+                    if not _is_search_domain(domain_key):
+                        all_domains_checked.add(domain_key)
                     is_official = _is_official_domain(domain_key) or source_class in {"official", "regulatory", "registry"}
                     if is_official:
                         official_domains_checked.add(domain_key)
@@ -1498,6 +1502,27 @@ def run_agent(
                         "UNRESOLVED: No official announcement found in sources checked.\n"
                         f"Official domains checked: {sorted(official_domains_checked)}\n"
                         f"Independent domains checked: {sorted(independent_domains_checked)}\n"
+                        "See /work/notes.md and /work/evidence.jsonl."
+                    )
+                if SOURCE_BUDGET > 0 and len(all_domains_checked) >= SOURCE_BUDGET:
+                    epistemic.status = "UNRESOLVED"
+                    if negative_claim_task and not _negative_claim_ready(step):
+                        epistemic.add_unresolved("source_budget_exhausted_before_negative_claim_constraints")
+                        reason = "UNRESOLVED: Source budget exhausted before negative-claim constraints were met."
+                    else:
+                        epistemic.add_unresolved("source_budget_exhausted")
+                        reason = "UNRESOLVED: Source budget exhausted."
+                    trace_event(
+                        {
+                            "type": "policy_source_budget",
+                            "step": step,
+                            "source_budget": SOURCE_BUDGET,
+                            "domains_checked": len(all_domains_checked),
+                        }
+                    )
+                    return (
+                        f"{reason}\n"
+                        f"Domains checked ({len(all_domains_checked)}): {sorted(all_domains_checked)}\n"
                         "See /work/notes.md and /work/evidence.jsonl."
                     )
                 if query_family and query_family not in recent_query_families:

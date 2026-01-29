@@ -242,6 +242,7 @@ bash stop_stack.sh
   - `dra_policy_stagnation_total`
   - `dra_policy_domain_shift_total`
   - `dra_policy_conclusion_ready_total`
+  - `dra_policy_source_budget_total`
   - `dra_verifier_gradient_total`
 
 ## Safety Notes (POC)
@@ -291,6 +292,7 @@ This is a research prototype: review deny patterns and add policy/allowlists bef
     ```
 - The verifier runs in a **clean-room** “Auditor” persona and does not reuse the worker’s chat history (only task + notes + evidence).
 - Stagnation detector: if `UNRESOLVED` repeats without new evidence for `STAGNATION_LIMIT` turns, the agent is forced to run a tool; repeated failure types prompt escalation (`FAILURE_ESCALATION_LIMIT`).
+- Source budget: after `SOURCE_BUDGET` distinct non-search domains are checked without verification, the run exits as `UNRESOLVED` with a source-exhaustion summary (`policy_source_budget`).
 - Negative-claim protocol (e.g., “has X launched yet?”):
   - Minimum source coverage is enforced before any “no official announcement found” conclusion:
     - ≥2 **official** domains (vendor-owned)
