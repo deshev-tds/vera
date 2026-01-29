@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+if [[ ! -d ".venv" ]]; then
+  echo "[boot] Creating .venv..."
+  python3 -m venv .venv
+fi
+
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8844}"
 WORK_DIR_REL="${WORK_DIR:-./work/first-run}"
