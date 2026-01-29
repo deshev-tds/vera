@@ -240,6 +240,8 @@ bash stop_stack.sh
   - `dra_policy_choice_total`
   - `dra_policy_choice_matched_total`
   - `dra_policy_stagnation_total`
+  - `dra_policy_domain_shift_total`
+  - `dra_policy_conclusion_ready_total`
   - `dra_verifier_gradient_total`
 
 ## Safety Notes (POC)

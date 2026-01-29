@@ -417,7 +417,7 @@ INDEX_HTML = """<!doctype html>
         if (type === "verifier") return "log-verifier";
         if (type === "verifier_to_agent") return "log-verifier-to-agent";
         if (type === "agent_from_verifier") return "log-agent-from-verifier";
-        if (type === "policy_reminder" || type === "policy_choice" || type === "policy_stagnation" || type === "policy_query_mutation" || type === "verifier_gradient") return "log-policy";
+        if (type === "policy_reminder" || type === "policy_choice" || type === "policy_stagnation" || type === "policy_query_mutation" || type === "policy_domain_shift" || type === "policy_conclusion_ready" || type === "verifier_gradient") return "log-policy";
         return "log-other";
       }
 
@@ -513,7 +513,7 @@ INDEX_HTML = """<!doctype html>
             `verifier_last_score=${m.verifier_last_score ?? "-"} verifier_avg_s=${avgVer.toFixed(2)} verifier_before_tools_total=${m.verifier_before_tools_total ?? 0}\\n` +
             `verifier_tokens_total=${m.verifier_model_tokens_total ?? 0} verifier_tool_calls_total=${m.verifier_tool_calls_total ?? 0} verifier_gradient_total=${m.verifier_gradient_total ?? 0}\\n` +
             `model_calls_total=${m.model_calls_total} model_tokens_agent=${modelByScope.agent ?? 0} finish_reason_length_total=${m.model_finish_reason_length_total ?? 0}\\n` +
-            `policy_pre_tool_nudge_total=${m.policy_pre_tool_nudge_total ?? 0} policy_length_nudge_total=${m.policy_length_nudge_total ?? 0} policy_reminder_total=${m.policy_reminder_total ?? 0} policy_choice_total=${m.policy_choice_total ?? 0} policy_choice_matched_total=${m.policy_choice_matched_total ?? 0} policy_stagnation_total=${m.policy_stagnation_total ?? 0}\\n` +
+            `policy_pre_tool_nudge_total=${m.policy_pre_tool_nudge_total ?? 0} policy_length_nudge_total=${m.policy_length_nudge_total ?? 0} policy_reminder_total=${m.policy_reminder_total ?? 0} policy_choice_total=${m.policy_choice_total ?? 0} policy_choice_matched_total=${m.policy_choice_matched_total ?? 0} policy_stagnation_total=${m.policy_stagnation_total ?? 0} policy_domain_shift_total=${m.policy_domain_shift_total ?? 0} policy_conclusion_ready_total=${m.policy_conclusion_ready_total ?? 0}\\n` +
             `max_step=${m.max_step} last_ts=${m.last_ts ? new Date(m.last_ts*1000).toLocaleTimeString() : "-"}`;
         } catch (_) {}
       }
@@ -609,6 +609,23 @@ INDEX_HTML = """<!doctype html>
           appendLog(
             `[policy] stagnation streak=${streak}/${limit} failure=${failure} failure_streak=${failureStreak}`,
             "policy_stagnation"
+          );
+        } else if (type === "policy_domain_shift") {
+          const domain = data.domain || "-";
+          const official = data.official_checked ?? "-";
+          const independent = data.independent_checked ?? "-";
+          const limit = data.limit ?? "-";
+          appendLog(
+            `[policy] domain_shift domain=${domain} official=${official} independent=${independent} limit=${limit}`,
+            "policy_domain_shift"
+          );
+        } else if (type === "policy_conclusion_ready") {
+          const official = data.official_checked ?? "-";
+          const independent = data.independent_checked ?? "-";
+          const budget = data.budget_steps ?? "-";
+          appendLog(
+            `[policy] conclusion_ready official=${official} independent=${independent} budget_steps=${budget}`,
+            "policy_conclusion_ready"
           );
         } else if (type === "model") {
           const scope = data.scope || "unknown";
@@ -744,6 +761,8 @@ def compute_metrics(trace_path: Path, max_lines: int = 5000) -> dict:
         "tool_calls_by_tool": {},
         "tool_errors_total": 0,
         "policy_stagnation_total": 0,
+        "policy_domain_shift_total": 0,
+        "policy_conclusion_ready_total": 0,
         "verifier_scores_total": {1: 0, 2: 0, 3: 0, 4: 0},
         "max_step": 0,
         "last_ts": 0.0,
@@ -771,6 +790,10 @@ def compute_metrics(trace_path: Path, max_lines: int = 5000) -> dict:
                 metrics["tool_errors_total"] += 1
         if t == "policy_stagnation":
             metrics["policy_stagnation_total"] += 1
+        if t == "policy_domain_shift":
+            metrics["policy_domain_shift_total"] += 1
+        if t == "policy_conclusion_ready":
+            metrics["policy_conclusion_ready_total"] += 1
         if t == "verifier":
             d = (ev.get("decision") or {})
             score = d.get("score")
@@ -806,6 +829,8 @@ def render_prometheus(metrics: dict) -> str:
     emit("dra_policy_choice_total", int(metrics.get("policy_choice_total") or 0))
     emit("dra_policy_choice_matched_total", int(metrics.get("policy_choice_matched_total") or 0))
     emit("dra_policy_stagnation_total", int(metrics.get("policy_stagnation_total") or 0))
+    emit("dra_policy_domain_shift_total", int(metrics.get("policy_domain_shift_total") or 0))
+    emit("dra_policy_conclusion_ready_total", int(metrics.get("policy_conclusion_ready_total") or 0))
     for score, c in sorted((metrics.get("verifier_scores_total") or {}).items()):
         emit("dra_verifier_scores_total", c, {"score": score})
     last_score = metrics.get("verifier_last_score")
@@ -861,6 +886,8 @@ class TraceState:
             "policy_choice_total": 0,
             "policy_choice_matched_total": 0,
             "policy_stagnation_total": 0,
+            "policy_domain_shift_total": 0,
+            "policy_conclusion_ready_total": 0,
             "verifier_scores_total": {1: 0, 2: 0, 3: 0, 4: 0},
             "verifier_last_score": None,
             "verifier_duration_s_sum": 0.0,
@@ -932,6 +959,10 @@ class TraceState:
                 m["policy_choice_matched_total"] += 1
         if t == "policy_stagnation":
             m["policy_stagnation_total"] += 1
+        if t == "policy_domain_shift":
+            m["policy_domain_shift_total"] += 1
+        if t == "policy_conclusion_ready":
+            m["policy_conclusion_ready_total"] += 1
         if t == "verifier_gradient":
             m["verifier_gradient_total"] += 1
 
