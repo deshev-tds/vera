@@ -488,6 +488,16 @@ def run_agent(
                 return True
         return False
 
+    def _negative_claim_ready(step_num: int) -> bool:
+        if not negative_claim_task:
+            return False
+        if step_num < negative_claim_budget_steps:
+            return False
+        return (
+            len(official_domains_checked) >= NEGATIVE_CLAIM_MIN_OFFICIAL
+            and len(independent_domains_checked) >= NEGATIVE_CLAIM_MIN_INDEPENDENT
+        )
+
     if negative_claim_task:
         epistemic.add_constraint(
             "Negative-claim task: require ≥2 official domains and ≥1 independent domain before concluding "
@@ -1472,6 +1482,24 @@ def run_agent(
                         domain_same_streak = 0
                         force_domain_shift = False
                     last_domain_key = domain_key
+                if _negative_claim_ready(step):
+                    epistemic.status = "UNRESOLVED"
+                    epistemic.add_unresolved("no_official_announcement_found_in_sources_checked")
+                    trace_event(
+                        {
+                            "type": "policy_conclusion_ready",
+                            "step": step,
+                            "official_checked": len(official_domains_checked),
+                            "independent_checked": len(independent_domains_checked),
+                            "budget_steps": negative_claim_budget_steps,
+                        }
+                    )
+                    return (
+                        "UNRESOLVED: No official announcement found in sources checked.\n"
+                        f"Official domains checked: {sorted(official_domains_checked)}\n"
+                        f"Independent domains checked: {sorted(independent_domains_checked)}\n"
+                        "See /work/notes.md and /work/evidence.jsonl."
+                    )
                 if query_family and query_family not in recent_query_families:
                     recent_query_families.append(query_family)
                     force_query_mutation = False
