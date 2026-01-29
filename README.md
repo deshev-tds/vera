@@ -2,7 +2,7 @@
 
 A proof-of-concept “Verification-Enabled Research Agent” (VERA) that runs **locally**, with full root permissions in a Linux **Docker sandbox**, can browse the public internet, read/write mounted files, run Linux commands + Python, and uses a **test-time verification loop** to reduce hallucinations and enforce evidence-grounded outputs.
 
-**It seems that when we bring back the "eyes" and the "hands" to an LLM, it beings to show emergent behaviours (e.g. a versy small 30B model optimized for coding, setting search thresholds for atmomic mass and then drawing formulas, compiling the required librarios prior to that - with no human nudge at all!)**
+**It seems that when we bring back the "eyes" and the "hands" to an LLM, it beings to show emergent behaviours. In my experiments, a versy small 30B model optimized for coding, agreed with itself to set a very conrete (and meaninfully small) margin of error when performing search thresholds for atmomic masses. Then it drew formulas, compiling the required libraris prior to that - with no human nudge at all!**
 
 This repo is explicitly motivated by two complementary research threads:
 
