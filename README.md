@@ -2,7 +2,7 @@
 
 A proof-of-concept “Verification-Enabled Research Agent” (VERA) that runs **locally**, with full root permissions in a Linux **Docker sandbox**, can browse the public internet, read/write mounted files, run Linux commands + Python, and uses a **test-time verification loop** to reduce hallucinations and enforce evidence-grounded outputs.
 
-**When an LLM is given real I/O (files, network, shell) and real tools, it can exhibit emergent problem-solving behaviors. In one experiment, a small 30B coding-optimized model independently converged on a strict numerical error tolerance while searching atomic mass data, installed required libraries at runtime, and produced chemical structure diagrams — without any explicit human guidance.**
+When an LLM is given real I/O (files, network, shell) and real tools, it can exhibit **emergent problem-solving behaviors**. In one experiment, a small 30B coding-optimized model independently converged on a strict numerical error tolerance while searching atomic mass data, installed required libraries at runtime, and produced chemical structure diagrams - without any explicit human guidance.
 
 This repo is explicitly motivated by two complementary research threads:
 
